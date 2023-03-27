@@ -25,7 +25,7 @@ import { DiagnosticData } from './models/DiagnosticData';
 import { Suggestion } from './models/Suggestion';
 import { GetSettingsResult, SuggestionGenerator } from './SuggestionsGenerator';
 import { uniqueFilter } from './utils';
-import * as range from './utils/range';
+// import * as range from './utils/range';
 import * as Validator from './validator';
 
 const createCommand = LangServerCommand.create;
@@ -97,47 +97,48 @@ class CodeActionHandler {
         } = params;
         const { diagnostics } = context;
         const spellCheckerDiags = diagnostics.filter((diag) => diag.source === Validator.diagSource);
-        const eslintSpellCheckerDiags = diagnostics.filter((diag) => diag.source === 'eslint' && diag.code == '@cspell/spellchecker');
+        // const eslintSpellCheckerDiags = diagnostics.filter((diag) => diag.source === 'eslint' && diag.code == '@cspell/spellchecker');
 
-        if (!spellCheckerDiags.length && !eslintSpellCheckerDiags.length) return [];
+        // if (!spellCheckerDiags.length && !eslintSpellCheckerDiags.length) return [];
 
         const textDocument = this.documents.get(uri);
-        if (!textDocument) return [];
+        if (!textDocument) return [{ command: { command: 'no text docs', title: 'no text docs' }, title: 'no text docs' }];
 
-        const rangeIntersectDiags = [...spellCheckerDiags, ...eslintSpellCheckerDiags]
-            .map((diag) => diag.range)
-            .reduce((a: LangServerRange | undefined, b) => a && range.intersect(a, b), params.range);
+        // const rangeIntersectDiags = [...spellCheckerDiags, ...eslintSpellCheckerDiags]
+        //     .map((diag) => diag.range)
+        //     .reduce((a: LangServerRange | undefined, b) => a && range.intersect(a, b), params.range);
 
         // Only provide suggestions if the selection is contained in the diagnostics.
-        if (!rangeIntersectDiags || !(range.equal(params.range, rangeIntersectDiags) || isWordLikeSelection(textDocument, params.range))) {
-            return [];
-        }
+        // if (!rangeIntersectDiags || !(range.equal(params.range, rangeIntersectDiags) || isWordLikeSelection(textDocument, params.range))) {
+        //     return [];
+        // }
 
         const ctx = {
             params,
             textDocument,
         };
 
-        return eslintSpellCheckerDiags.length
-            ? this.handlerESLint({ ...ctx, diags: eslintSpellCheckerDiags })
-            : this.handlerCSpell({ ...ctx, diags: spellCheckerDiags });
+        // return eslintSpellCheckerDiags.length
+        //     ? this.handlerESLint({ ...ctx, diags: eslintSpellCheckerDiags })
+        //     : this.handlerCSpell({ ...ctx, diags: spellCheckerDiags });
+        return this.handlerCSpell({ ...ctx, diags: spellCheckerDiags });
     }
 
     private async handlerCSpell(handlerContext: CodeActionHandlerContext) {
         const { params, textDocument, diags: spellCheckerDiags } = handlerContext;
         const actions: CodeAction[] = [];
         const uri = textDocument.uri;
-        if (!spellCheckerDiags.length) return [];
+        // if (!spellCheckerDiags.length) return [];
 
         // We do not want to clutter the actions when someone is trying to refactor code
-        if (spellCheckerDiags.length > 1) return [];
+        // if (spellCheckerDiags.length > 1) return [];
 
         const { settings: docSetting, dictionary } = await this.getSettings(textDocument);
         if (!isUriAllowed(uri, docSetting.allowedSchemas)) {
             log(`CodeAction Uri Not allowed: ${uri}`);
             return [];
         }
-        const pWorkspaceConfig = this.clientApi.sendOnWorkspaceConfigForDocumentRequest({ uri });
+        // const pWorkspaceConfig = this.clientApi.sendOnWorkspaceConfigForDocumentRequest({ uri });
 
         function replaceText(range: LangServerRange, text?: string) {
             return TextEdit.replace(range, text || '');
@@ -172,7 +173,14 @@ class CodeActionHandler {
             const word = diagWord || extractText(textDocument, params.range);
             // Only suggest adding if it is our diagnostic and there is a word.
             if (isSpellingIssue && word && spellCheckerDiags.length) {
-                const wConfig = await pWorkspaceConfig;
+                // const wConfig = await pWorkspaceConfig;
+                const wConfig = {
+                    uri: undefined,
+                    workspaceFile: undefined,
+                    workspaceFolder: undefined,
+                    words: {},
+                    ignoreWords: {},
+                };
                 const targets = calculateConfigTargets(docSetting, wConfig);
                 debugTargets && logTargets(targets);
 
@@ -186,36 +194,36 @@ class CodeActionHandler {
         return genCodeActionsForSuggestions(dictionary);
     }
 
-    private async handlerESLint(handlerContext: CodeActionHandlerContext): Promise<CodeAction[]> {
-        const { params, textDocument, diags: eslintSpellCheckerDiags } = handlerContext;
-        const uri = textDocument.uri;
-        const actions: CodeAction[] = [];
-        if (!eslintSpellCheckerDiags.length) return [];
+    // private async handlerESLint(handlerContext: CodeActionHandlerContext): Promise<CodeAction[]> {
+    //     const { params, textDocument, diags: eslintSpellCheckerDiags } = handlerContext;
+    //     const uri = textDocument.uri;
+    //     const actions: CodeAction[] = [];
+    //     if (!eslintSpellCheckerDiags.length) return [];
 
-        // We do not want to clutter the actions when someone is trying to refactor code
-        // or if it is already handled by ESLint.
-        if (eslintSpellCheckerDiags.length > 1) return [];
+    //     // We do not want to clutter the actions when someone is trying to refactor code
+    //     // or if it is already handled by ESLint.
+    //     if (eslintSpellCheckerDiags.length > 1) return [];
 
-        const { settings: docSetting, dictionary } = await this.getSettings(textDocument);
-        const pWorkspaceConfig = this.clientApi.sendOnWorkspaceConfigForDocumentRequest({ uri });
+    //     const { settings: docSetting, dictionary } = await this.getSettings(textDocument);
+    //     const pWorkspaceConfig = this.clientApi.sendOnWorkspaceConfigForDocumentRequest({ uri });
 
-        async function genCodeActions(_dictionary: SpellingDictionary) {
-            const word = extractText(textDocument, params.range);
-            // Only suggest adding if it is our diagnostic and there is a word.
-            if (word && eslintSpellCheckerDiags.length) {
-                const wConfig = await pWorkspaceConfig;
-                const targets = calculateConfigTargets(docSetting, wConfig);
-                debugTargets && logTargets(targets);
+    //     async function genCodeActions(_dictionary: SpellingDictionary) {
+    //         const word = extractText(textDocument, params.range);
+    //         // Only suggest adding if it is our diagnostic and there is a word.
+    //         if (word && eslintSpellCheckerDiags.length) {
+    //             const wConfig = await pWorkspaceConfig;
+    //             const targets = calculateConfigTargets(docSetting, wConfig);
+    //             debugTargets && logTargets(targets);
 
-                if (!docSetting.hideAddToDictionaryCodeActions) {
-                    actions.push(...generateTargetActions(textDocument, eslintSpellCheckerDiags, word, targets));
-                }
-            }
-            return actions;
-        }
+    //             if (!docSetting.hideAddToDictionaryCodeActions) {
+    //                 actions.push(...generateTargetActions(textDocument, eslintSpellCheckerDiags, word, targets));
+    //             }
+    //         }
+    //         return actions;
+    //     }
 
-        return genCodeActions(dictionary);
-    }
+    //     return genCodeActions(dictionary);
+    // }
 }
 
 interface CodeActionHandlerContext {
@@ -272,6 +280,7 @@ function generateTargetActions(doc: TextDocument, spellCheckerDiags: Diagnostic[
     const handled = new Set<ConfigScope>();
 
     const filtered = targets.filter((t) => {
+        if (t.kind === ConfigKinds.Vscode) return false;
         if (t.kind === 'dictionary' || !handled.has(t.scope) || t.has.words) {
             handled.add(t.scope);
             return true;
@@ -322,10 +331,10 @@ function generateTargetActions(doc: TextDocument, spellCheckerDiags: Diagnostic[
     return actions;
 }
 
-function isWordLikeSelection(doc: TextDocument, range: LangServerRange): boolean {
-    if (range.start.line !== range.end.line) return false;
+// function isWordLikeSelection(doc: TextDocument, range: LangServerRange): boolean {
+//     if (range.start.line !== range.end.line) return false;
 
-    const text = doc.getText(range);
-    const hasSpace = /\s/.test(text.trim());
-    return !hasSpace;
-}
+//     const text = doc.getText(range);
+//     const hasSpace = /\s/.test(text.trim());
+//     return !hasSpace;
+// }

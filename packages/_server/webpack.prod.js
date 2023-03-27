@@ -4,4 +4,7 @@ module.exports = {
     ...config,
     devtool: 'source-map',
     mode: 'production',
+    optimization: {
+        minimize: false
+    },
 };

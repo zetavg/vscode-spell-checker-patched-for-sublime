@@ -5,14 +5,18 @@ import { log, logError, logger, logInfo, setWorkspaceBase, setWorkspaceFolders }
 import { toFileUri, toUri } from 'common-utils/uriHelper.js';
 import * as CSpell from 'cspell-lib';
 import { CSpellSettingsWithSourceTrace, extractImportErrors, getDefaultSettings, Glob, refreshDictionaryCache } from 'cspell-lib';
+import fs from 'fs';
+import { applyEdits, EditResult, findNodeAtLocation, modify, Node, parseTree } from 'jsonc-parser';
 import { interval, ReplaySubject, Subscription } from 'rxjs';
 import { debounce, debounceTime, filter, mergeMap, take, tap } from 'rxjs/operators';
+import url from 'url';
 import {
     CodeActionKind,
     createConnection,
     Diagnostic,
     DidChangeConfigurationParams,
     Disposable,
+    ExecuteCommandParams,
     InitializeParams,
     InitializeResult,
     ProposedFeatures,
@@ -20,6 +24,7 @@ import {
     ServerCapabilities,
     TextDocuments,
     TextDocumentSyncKind,
+    VersionedTextDocumentIdentifier,
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
@@ -622,6 +627,106 @@ export function run(): void {
     }
 
     connection.onCodeAction(onCodeActionHandler(documents, getBaseSettings, () => documentSettings.version, clientApi));
+
+    connection.onExecuteCommand((params: ExecuteCommandParams) => {
+        const { command, arguments: args = [] } = params;
+
+        if (command === 'cSpell.editText') {
+            const documentUri = args[0];
+            const documentVersion = args[1];
+            const textEdits = args[2];
+
+            if (!documentUri) throw new Error('First argument (documentUri) missing');
+            if (!textEdits) throw new Error('Third argument (textEdits) missing');
+
+            const versionedDoc = VersionedTextDocumentIdentifier.create(documentUri, documentVersion);
+
+            const workspaceEdit = {
+                documentChanges: [
+                    {
+                        textDocument: versionedDoc,
+                        edits: textEdits,
+                    },
+                ],
+            };
+
+            return connection.workspace.applyEdit(workspaceEdit);
+        } else if (command === 'cSpell.addWordsToConfigFileFromServer') {
+            const newWords = args[0];
+            const documentUri = args[1];
+            const { uri: configFileUri } = args[2] || {};
+
+            if (!Array.isArray(newWords)) throw new Error('First argument (newWords) should be an array');
+            if (!configFileUri) throw new Error('Argument configFileUri missing');
+            const configFilePath = url.fileURLToPath(configFileUri);
+
+            const fileContent = fs.readFileSync(configFilePath, 'utf-8');
+            const jsonTree = parseTree(fileContent);
+            if (!jsonTree) throw new Error(`Cannot parse JSON from file ${configFilePath}`);
+
+            const existingArrayNode = findNodeAtLocation(jsonTree, ['words']);
+            let edits: EditResult;
+            if (existingArrayNode && existingArrayNode.type === 'array') {
+                // If the array exists, append the new array to the existing one
+
+                // eslint-disable-next-line no-inner-declarations
+                function analyzeArrayInsertFormatting(arrayNode: Node, content: string) {
+                    if ((arrayNode.children || []).length === 0) {
+                        const insertPosition = arrayNode.offset + arrayNode.length - 1;
+                        return { separator: ', ', insertPosition, replaceLength: 0 };
+                    }
+
+                    const theElementBeforeTheLastElement = (arrayNode.children || [])[(arrayNode.children?.length || 0) - 2];
+                    const theLastElement = (arrayNode.children || [])[(arrayNode.children?.length || 0) - 1];
+
+                    const separator = (() => {
+                        if (theElementBeforeTheLastElement && theLastElement)
+                            return content.slice(
+                                theElementBeforeTheLastElement.offset + theElementBeforeTheLastElement.length,
+                                theLastElement.offset
+                            );
+
+                        const theFirstElement = (arrayNode.children || [])[0];
+                        if (!theFirstElement) return ', ';
+
+                        const firstContent = content.slice(arrayNode.offset + 1, theFirstElement.offset).replace(/^[^\n]+\n/, '\n');
+                        if (!firstContent.match('^\n')) return ', ';
+
+                        return ',' + firstContent;
+                    })();
+
+                    const insertStartPosition = theLastElement.offset + theLastElement.length;
+                    const remainingContent = content.slice(insertStartPosition, arrayNode.offset + arrayNode.length - 1);
+                    const [contentToReplace] = remainingContent.split(/[\n\]]/);
+                    const insertPosition = insertStartPosition;
+                    const replaceLength = contentToReplace.length;
+
+                    return { insertPosition, replaceLength, separator, notFirst: true };
+                }
+
+                const { insertPosition, replaceLength, separator, notFirst } = analyzeArrayInsertFormatting(existingArrayNode, fileContent);
+
+                let newText = newWords.map((w) => JSON.stringify(w)).join(separator);
+                if (notFirst) newText = separator + newText;
+                edits = [{ offset: insertPosition, length: replaceLength, content: newText }];
+            } else {
+                // If the array doesn't exist, create a new one
+                edits = modify(fileContent, ['words'], newWords, { formattingOptions: { insertSpaces: true, tabSize: 2 } });
+            }
+
+            // Apply the edits to the config file
+            const updatedContent = applyEdits(fileContent, edits);
+            fs.writeFileSync(configFilePath, updatedContent);
+
+            // Re-diagnose the source file
+            if (documentUri) {
+                const document = documents.get(documentUri);
+                if (document) validationRequestStream.next(document);
+            }
+        } else {
+            throw new Error(`Unknown command: ${command} (arguments: ${JSON.stringify(args)})`);
+        }
+    });
 
     // Free up the validation streams on shutdown.
     connection.onShutdown(() => {
