@@ -1,5 +1,7 @@
 # Spelling Checker for Visual Studio Code<br />Patched for Sublime Text 4
 
+![](https://user-images.githubusercontent.com/3784687/228047349-31e55294-ed04-4301-b06c-8b8fa0708d0e.png)
+
 ## Build and Install
 
 First, build:
